@@ -146,62 +146,78 @@ async def health():
 
 @app.post("/search")
 async def web_search(req: SearchRequest):
-    """Web search using SearXNG public instances (no API key needed)"""
-    instances = [
-        "https://search.sapti.me",
-        "https://searx.be",
-        "https://search.bus-hit.me",
-        "https://paulgo.io",
-        "https://opnxng.com",
-    ]
-    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
-        for inst in instances:
-            try:
-                resp = await client.get(f"{inst}/search", params={
-                    "q": req.query, "format": "json", "categories": "general"
-                }, headers={"Accept": "application/json"})
-                if resp.status_code == 200:
-                    data = resp.json()
-                    results = []
-                    for r in data.get("results", [])[:req.max_results]:
-                        results.append({
-                            "title": r.get("title", ""),
-                            "url": r.get("url", ""),
-                            "snippet": r.get("content", "")[:300]
-                        })
-                    if results:
-                        return {"query": req.query, "results": results, "engine": inst}
-            except Exception:
-                continue
-        # Fallback: DuckDuckGo HTML with proper browser headers
+    """Web search using Wikipedia API + DuckDuckGo Instant Answers (no API key, no scraping)"""
+    results = []
+    async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+        # Source 1: Wikipedia Search API (always works, pure JSON)
         try:
-            from urllib.parse import unquote, parse_qs, urlparse
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9"
+            wiki_url = "https://en.wikipedia.org/w/api.php"
+            params = {
+                "action": "query",
+                "list": "search",
+                "srsearch": req.query,
+                "srlimit": min(req.max_results, 5),
+                "format": "json",
+                "utf8": 1
             }
-            resp = await client.get("https://html.duckduckgo.com/html/", params={"q": req.query}, headers=headers)
-            soup = BeautifulSoup(resp.text, "html.parser")
-            results = []
-            for r in soup.select(".result"):
-                title_el = r.select_one(".result__title a")
-                snippet_el = r.select_one(".result__snippet")
-                if title_el:
-                    href = title_el.get("href", "")
-                    if "uddg=" in href:
-                        parsed = parse_qs(urlparse(href).query)
-                        href = unquote(parsed.get("uddg", [href])[0])
+            resp = await client.get(wiki_url, params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("query", {}).get("search", []):
+                    snippet = item.get("snippet", "")
+                    snippet = re.sub(r'<[^>]+>', '', snippet)
                     results.append({
-                        "title": title_el.get_text(strip=True),
-                        "url": href,
-                        "snippet": snippet_el.get_text(strip=True) if snippet_el else ""
+                        "title": item.get("title", ""),
+                        "url": f"https://en.wikipedia.org/wiki/{item.get('title', '').replace(' ', '_')}",
+                        "snippet": snippet[:300],
+                        "source": "wikipedia"
                     })
-                if len(results) >= req.max_results:
-                    break
-            return {"query": req.query, "results": results, "engine": "duckduckgo_html"}
-        except Exception as e:
-            return {"query": req.query, "results": [], "error": str(e)}
+        except Exception:
+            pass
+
+        # Source 2: DuckDuckGo Instant Answer API (JSON, no scraping)
+        try:
+            ddg_resp = await client.get("https://api.duckduckgo.com/", params={
+                "q": req.query,
+                "format": "json",
+                "no_redirect": 1
+            })
+            if ddg_resp.status_code == 200:
+                ddg = ddg_resp.json()
+                if ddg.get("AbstractText") and ddg.get("AbstractURL"):
+                    results.append({
+                        "title": ddg.get("Heading", req.query),
+                        "url": ddg["AbstractURL"],
+                        "snippet": ddg["AbstractText"][:300],
+                        "source": "duckduckgo"
+                    })
+                for topic in ddg.get("RelatedTopics", [])[:req.max_results]:
+                    if topic.get("Text") and topic.get("FirstURL"):
+                        results.append({
+                            "title": topic["Text"][:80],
+                            "url": topic["FirstURL"],
+                            "snippet": topic["Text"][:300],
+                            "source": "duckduckgo"
+                        })
+                for r in ddg.get("Results", [])[:3]:
+                    if r.get("Text") and r.get("FirstURL"):
+                        results.append({
+                            "title": r.get("Text", "")[:80],
+                            "url": r["FirstURL"],
+                            "snippet": r.get("Text", "")[:300],
+                            "source": "duckduckgo"
+                        })
+        except Exception:
+            pass
+
+    seen = set()
+    unique = []
+    for r in results:
+        if r["url"] not in seen:
+            seen.add(r["url"])
+            unique.append(r)
+
+    return {"query": req.query, "results": unique[:req.max_results], "total_found": len(unique)}
 
 @app.post("/fetch")
 async def fetch_url(url: str):
