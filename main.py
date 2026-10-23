@@ -146,22 +146,62 @@ async def health():
 
 @app.post("/search")
 async def web_search(req: SearchRequest):
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-        resp = await client.get("https://html.duckduckgo.com/html/", params={"q": req.query})
-        soup = BeautifulSoup(resp.text, "html.parser")
-        results = []
-        for r in soup.select(".result"):
-            title_el = r.select_one(".result__title a")
-            snippet_el = r.select_one(".result__snippet")
-            if title_el:
-                results.append({
-                    "title": title_el.get_text(strip=True),
-                    "url": title_el.get("href", ""),
-                    "snippet": snippet_el.get_text(strip=True) if snippet_el else ""
-                })
-            if len(results) >= req.max_results:
-                break
-    return {"query": req.query, "results": results}
+    """Web search using SearXNG public instances (no API key needed)"""
+    instances = [
+        "https://search.sapti.me",
+        "https://searx.be",
+        "https://search.bus-hit.me",
+        "https://paulgo.io",
+        "https://opnxng.com",
+    ]
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+        for inst in instances:
+            try:
+                resp = await client.get(f"{inst}/search", params={
+                    "q": req.query, "format": "json", "categories": "general"
+                }, headers={"Accept": "application/json"})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    results = []
+                    for r in data.get("results", [])[:req.max_results]:
+                        results.append({
+                            "title": r.get("title", ""),
+                            "url": r.get("url", ""),
+                            "snippet": r.get("content", "")[:300]
+                        })
+                    if results:
+                        return {"query": req.query, "results": results, "engine": inst}
+            except Exception:
+                continue
+        # Fallback: DuckDuckGo HTML with proper browser headers
+        try:
+            from urllib.parse import unquote, parse_qs, urlparse
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9"
+            }
+            resp = await client.get("https://html.duckduckgo.com/html/", params={"q": req.query}, headers=headers)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            results = []
+            for r in soup.select(".result"):
+                title_el = r.select_one(".result__title a")
+                snippet_el = r.select_one(".result__snippet")
+                if title_el:
+                    href = title_el.get("href", "")
+                    if "uddg=" in href:
+                        parsed = parse_qs(urlparse(href).query)
+                        href = unquote(parsed.get("uddg", [href])[0])
+                    results.append({
+                        "title": title_el.get_text(strip=True),
+                        "url": href,
+                        "snippet": snippet_el.get_text(strip=True) if snippet_el else ""
+                    })
+                if len(results) >= req.max_results:
+                    break
+            return {"query": req.query, "results": results, "engine": "duckduckgo_html"}
+        except Exception as e:
+            return {"query": req.query, "results": [], "error": str(e)}
 
 @app.post("/fetch")
 async def fetch_url(url: str):
@@ -512,7 +552,7 @@ async def translate(req: TranslateRequest):
         return {"error": str(e)}
 
 
-# --- BROWSER-FRIENDLY GET ENDPOINTS (for testing without curl) ---
+# --- BROWSER-FRIENDLY GET ENDPOINTS ---
 
 @app.get("/test/search")
 async def test_search(q: str = "AI news", max_results: int = 3):
