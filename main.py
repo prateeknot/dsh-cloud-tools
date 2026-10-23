@@ -510,3 +510,67 @@ async def translate(req: TranslateRequest):
         return {"original": req.text[:200], "translated": translated, "source_lang": req.source, "target_lang": req.target}
     except Exception as e:
         return {"error": str(e)}
+
+
+# --- BROWSER-FRIENDLY GET ENDPOINTS (for testing without curl) ---
+
+@app.get("/test/search")
+async def test_search(q: str = "AI news", max_results: int = 3):
+    return await web_search(SearchRequest(query=q, max_results=max_results))
+
+@app.get("/test/run")
+async def test_run(code: str = "result = 2 + 2"):
+    return await run_python(RunCodeRequest(code=code))
+
+@app.get("/test/weather")
+async def test_weather(city: str = "Delhi"):
+    return await weather(WeatherRequest(city=city))
+
+@app.get("/test/wiki")
+async def test_wiki(topic: str = "Python programming language", sentences: int = 2):
+    return await wikipedia_search(WikipediaRequest(topic=topic, sentences=sentences))
+
+@app.get("/test/news")
+async def test_news(topic: str = "technology", max_results: int = 3):
+    return await news_headlines(NewsRequest(topic=topic, max_results=max_results))
+
+@app.get("/test/sentiment")
+async def test_sentiment(text: str = "I love this amazing tool"):
+    return await sentiment(SentimentRequest(text=text))
+
+@app.get("/test/translate")
+async def test_translate(text: str = "Hello world", source: str = "en", target: str = "hi"):
+    return await translate(TranslateRequest(text=text, source=source, target=target))
+
+@app.get("/test/json")
+async def test_json(data: str = '{"name":"test","value":42}'):
+    return await json_format(JsonFormatRequest(data=data))
+
+@app.get("/test/github")
+async def test_github(owner: str = "torvalds", repo: str = "linux"):
+    return await github_repo(GithubRepoRequest(owner=owner, repo=repo))
+
+@app.get("/test")
+async def test_page():
+    html = """<!DOCTYPE html>
+<html><head><title>DSH Cloud Tools - Test</title>
+<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:20px;background:#1a1a2e;color:#eee}
+.card{background:#16213e;padding:15px;margin:10px 0;border-radius:8px;border-left:4px solid #0f3460}
+a{color:#4fc3f7;text-decoration:none}a:hover{text-decoration:underline}
+h1{color:#4fc3f7}h3{margin:0 0 8px 0;color:#e94560}</style></head>
+<body>
+<h1>DSH Cloud Tools v2.0 - Test Page</h1>
+<p>Click any link below to test. First click may take 30-60s (cold start), after that instant.</p>
+<div class="card"><h3>Web Search</h3><a href="/test/search?q=latest+AI+news&max_results=3" target="_blank">Search latest AI news</a></div>
+<div class="card"><h3>Python Run</h3><a href="/test/run?code=result%20%3D%202%20%2B%202" target="_blank">Run: result = 2 + 2</a></div>
+<div class="card"><h3>Weather</h3><a href="/test/weather?city=Delhi" target="_blank">Weather in Delhi</a></div>
+<div class="card"><h3>Wikipedia</h3><a href="/test/wiki?topic=Python+programming+language&sentences=2" target="_blank">Wikipedia: Python</a></div>
+<div class="card"><h3>News</h3><a href="/test/news?topic=technology&max_results=3" target="_blank">Tech News Headlines</a></div>
+<div class="card"><h3>Sentiment</h3><a href="/test/sentiment?text=I+love+this+amazing+tool" target="_blank">Analyze sentiment</a></div>
+<div class="card"><h3>Translate</h3><a href="/test/translate?text=Hello+world&source=en&target=hi" target="_blank">English to Hindi</a></div>
+<div class="card"><h3>JSON Format</h3><a href="/test/json" target="_blank">Validate JSON</a></div>
+<div class="card"><h3>GitHub Repo</h3><a href="/test/github?owner=torvalds&repo=linux" target="_blank">GitHub: torvalds/linux</a></div>
+<br><p style="color:#888">Server: <a href="/health">/health</a> | All tools: <a href="/">/</a></p>
+</body></html>"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html)
