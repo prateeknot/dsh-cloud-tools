@@ -1,38 +1,46 @@
 import os
 import httpx
-import asyncpg
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from bs4 import BeautifulSoup
+from contextlib import contextmanager
 
 app = FastAPI(title="DSH Cloud Tools", version="1.0.0")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-pool: Optional[asyncpg.Pool] = None
+
+
+@contextmanager
+def get_db():
+    if not DATABASE_URL:
+        raise HTTPException(503, "Database not configured")
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 @app.on_event("startup")
-async def startup():
-    global pool
+def startup():
     if DATABASE_URL:
-        pool = await asyncpg.create_pool(DATABASE_URL)
-        async with pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS data_lake (
-                    id SERIAL PRIMARY KEY,
-                    source TEXT,
-                    content TEXT,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    global pool
-    if pool:
-        await pool.close()
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS data_lake (
+                        id SERIAL PRIMARY KEY,
+                        source TEXT,
+                        content TEXT,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
 
 
 class SearchRequest(BaseModel):
@@ -61,10 +69,11 @@ async def root():
 @app.get("/health")
 async def health():
     db_ok = False
-    if pool:
+    if DATABASE_URL:
         try:
-            async with pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
             db_ok = True
         except Exception:
             pass
@@ -123,25 +132,25 @@ async def run_python(req: RunCodeRequest):
 
 @app.post("/store")
 async def store_data(req: StoreRequest):
-    if not pool:
-        raise HTTPException(503, "Database not connected")
-    async with pool.acquire() as conn:
-        row_id = await conn.fetchval(
-            "INSERT INTO data_lake (source, content) VALUES ($1, $2) RETURNING id",
-            req.source, req.content
-        )
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO data_lake (source, content) VALUES (%s, %s) RETURNING id",
+                (req.source, req.content)
+            )
+            row_id = cur.fetchone()["id"]
     return {"stored": True, "id": row_id}
 
 
 @app.get("/query")
 async def query_data(q: str, limit: int = 10):
-    if not pool:
-        raise HTTPException(503, "Database not connected")
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, source, content, created_at FROM data_lake WHERE content ILIKE $1 OR source ILIKE $1 ORDER BY created_at DESC LIMIT $2",
-            f"%{q}%", limit
-        )
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, source, content, created_at FROM data_lake WHERE content ILIKE %s OR source ILIKE %s ORDER BY created_at DESC LIMIT %s",
+                (f"%{q}%", f"%{q}%", limit)
+            )
+            rows = cur.fetchall()
     return {"results": [dict(r) for r in rows], "count": len(rows)}
 
 
